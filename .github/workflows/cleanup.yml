@@ -1,0 +1,66 @@
+name: 🧹 Cleanup — PR closed
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    name: 🧹 Cleanup feature
+    if: |
+      startsWith(github.head_ref, 'feat') ||
+      startsWith(github.head_ref, 'feature') ||
+      startsWith(github.head_ref, 'fix')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Compute slug
+        id: slug
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          SLUG=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/-\+/-/g' | cut -c1-40)
+          SERVICE="${{ vars.SERVICE_NAME }}-${SLUG}"
+          echo "slug=$SLUG"       >> $GITHUB_OUTPUT
+          echo "service=$SERVICE" >> $GITHUB_OUTPUT
+
+      - name: Dispatch cleanup
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ORCHESTRATOR_PAT }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: '${{ vars.ORCHESTRATOR_OWNER }}',
+              repo:  '${{ vars.ORCHESTRATOR_REPO }}',
+              event_type: 'cleanup-feature',
+              client_payload: {
+                service:   '${{ steps.slug.outputs.service }}',
+                slug:      '${{ steps.slug.outputs.slug }}',
+                image:     `ghcr.io/${{ github.repository }}:pr-${{ github.event.pull_request.number }}`,
+                pr_number: String(${{ github.event.pull_request.number }}),
+                merged:    String(${{ github.event.pull_request.merged }}),
+              },
+            });
+
+      # Si fue mergeado a develop → redeploy de develop
+      - name: Trigger develop redeploy on merge
+        if: github.event.pull_request.merged == true && github.base_ref == 'develop'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ORCHESTRATOR_PAT }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: '${{ vars.ORCHESTRATOR_OWNER }}',
+              repo:  '${{ vars.ORCHESTRATOR_REPO }}',
+              event_type: 'service-built',
+              client_payload: {
+                service: '${{ vars.SERVICE_NAME }}',
+                image:   `ghcr.io/${{ github.repository }}:develop`,
+                branch:  'develop',
+                metadata: {
+                  service: {
+                    name: '${{ vars.SERVICE_NAME }}',
+                    type: '${{ vars.SERVICE_TYPE || "api" }}',
+                  }
+                },
+              },
+            });

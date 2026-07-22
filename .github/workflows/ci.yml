@@ -1,0 +1,288 @@
+name: 🔨 CI — Build & Deploy
+
+on:
+  push:
+    branches: [main, staging, develop]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  REGISTRY:   ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BUILD — construye y sube la imagen con tag único por commit
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: 🔨 Build & Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+      tag:   ${{ steps.tag.outputs.tag }}
+      sha:   ${{ steps.tag.outputs.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Tag con SHA corto para trazabilidad total ──────────────────────────
+      # main    →  latest-a1b2c3d
+      # develop →  develop-a1b2c3d
+      # PR #42  →  pr-42-a1b2c3d
+      - name: Compute tag
+        id: tag
+        run: |
+          SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TAG="pr-${{ github.event.number }}-${SHA}"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            TAG="latest-${SHA}"
+          else
+            TAG="${{ github.ref_name }}-${SHA}"
+          fi
+
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+
+          echo "tag=$TAG"     >> $GITHUB_OUTPUT
+          echo "sha=$SHA"     >> $GITHUB_OUTPUT
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+          echo "### 🏷️ Tag calculado"     >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |"        >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|"                >> $GITHUB_STEP_SUMMARY
+          echo "| Tag   | \`${TAG}\`   |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA   | \`${SHA}\`   |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${IMAGE}\` |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Usa Containerfile (OCI/Podman) si existe, si no Dockerfile ─────────
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          file: ${{ hashFiles('Containerfile') != '' && 'Containerfile' || 'Dockerfile' }}
+          tags: ${{ steps.tag.outputs.image }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+
+      # ── Comentar en el PR con la imagen lista e instrucciones ──────────────
+      - name: Comment PR — image ready
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag    = '${{ steps.tag.outputs.tag }}';
+            const sha    = '${{ steps.tag.outputs.sha }}';
+            const image  = '${{ steps.tag.outputs.image }}';
+            const branch = context.payload.pull_request.head.ref;
+            const slug   = branch.toLowerCase()
+                             .replace(/[^a-z0-9]/g, '-')
+                             .replace(/-+/g, '-')
+                             .slice(0, 40);
+
+            const body = [
+              `### 🐋 Imagen lista \`${sha}\``,
+              ``,
+              `| Campo   | Valor |`,
+              `|---|---|`,
+              `| Imagen  | \`${image}\` |`,
+              `| Rama    | \`${branch}\` |`,
+              `| SHA     | \`${sha}\` |`,
+              `| Preview | \`https://${slug}.${{ vars.BASE_DOMAIN }}\` |`,
+              ``,
+              `**Para hacer deploy de esta feature escribe en este PR:**`,
+              `\`\`\``,
+              `/deploy`,
+              `\`\`\``,
+            ].join('\n');
+
+            const comments = await github.rest.issues.listComments({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+            const existing = comments.data.find(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes('Imagen lista')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body,
+              });
+            }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DISPATCH — genera el .env, lee service.yml e informa al orquestador
+  # Solo corre en push a ramas (no en PRs)
+  # ───────────────────────────────────────────────────────────────────────────
+  dispatch:
+    name: 📡 Dispatch to orchestrator
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      # ── Generar el .env desde .env.example + GitHub Secrets ────────────────
+      # Lee cada variable del .env.example y la sustituye con el valor
+      # del secret o variable correspondiente en GitHub.
+      # El .env generado NUNCA se commitea ni entra en la imagen.
+      # Viaja cifrado en el payload del dispatch al orquestador,
+      # que lo escribe en el servidor con permisos 600.
+      - name: Generate .env from .env.example
+        id: envfile
+        run: |
+          if [ ! -f ".env.example" ]; then
+            echo "⚠️  No existe .env.example — se omite generación del .env"
+            echo "content=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Generando .env desde .env.example..."
+          ENV_CONTENT=""
+
+          while IFS= read -r line || [ -n "$line" ]; do
+            # Saltar comentarios y líneas vacías
+            if [[ "$line" =~ ^#.*$ ]] || [[ -z "$line" ]]; then
+              ENV_CONTENT+="${line}\n"
+              continue
+            fi
+
+            # Extraer el nombre de la variable (antes del =)
+            VAR_NAME=$(echo "$line" | cut -d= -f1)
+
+            # Buscar el valor en las variables de entorno del runner
+            # Las variables de GitHub Secrets/Variables se pasan via env: más abajo
+            VAR_VALUE="${!VAR_NAME:-}"
+
+            if [ -n "$VAR_VALUE" ]; then
+              ENV_CONTENT+="${VAR_NAME}=${VAR_VALUE}\n"
+              echo "   ✅ $VAR_NAME → valor inyectado"
+            else
+              # Si no hay valor en GitHub, dejar la línea original del .env.example
+              ENV_CONTENT+="${line}\n"
+              echo "   ⚠️  $VAR_NAME → sin valor en GitHub (se usa el del .env.example)"
+            fi
+
+          done < .env.example
+
+          # Guardar en output (base64 para evitar problemas con caracteres especiales)
+          ENV_B64=$(echo -e "$ENV_CONTENT" | base64 -w 0)
+          echo "content=$ENV_B64" >> $GITHUB_OUTPUT
+          echo "✅ .env generado con $(echo -e "$ENV_CONTENT" | grep -c '=' || echo 0) variables"
+
+        # ── Aquí defines el mapping de tus GitHub Secrets/Variables ──────────
+        # Agrega una línea por cada variable que tenga tu .env.example.
+        # El nombre a la izquierda debe coincidir exactamente con el nombre
+        # de la variable en tu .env.example.
+        # Los valores vienen de tus GitHub Secrets o Variables del repo.
+        env:
+          # ── Base de datos ──────────────────────────────────────────────────
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+      
+
+      # ── Leer service.yml e inyectar la imagen del build actual ─────────────
+      - name: Read service.yml and inject image
+        id: meta
+        run: |
+          if [ ! -f "service.yml" ]; then
+            echo "::error::No existe service.yml en la raíz del repo"
+            exit 1
+          fi
+
+          IMAGE="${{ needs.build.outputs.image }}"
+          yq -i ".service.image = \"${IMAGE}\"" service.yml
+
+          METADATA=$(yq -o=json '.' service.yml)
+
+          echo "metadata<<EOF" >> $GITHUB_OUTPUT
+          echo "$METADATA"     >> $GITHUB_OUTPUT
+          echo "EOF"           >> $GITHUB_OUTPUT
+
+          echo "service=$(yq -r '.service.name' service.yml)" >> $GITHUB_OUTPUT
+
+      # ── Dispatch al orquestador con metadata + .env ─────────────────────────
+      - name: Dispatch to orchestrator
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ORCHESTRATOR_PAT }}
+          script: |
+            const branch        = '${{ github.ref_name }}';
+            const image         = '${{ needs.build.outputs.image }}';
+            const sha           = '${{ needs.build.outputs.sha }}';
+            const service       = '${{ steps.meta.outputs.service }}';
+            const metadata      = ${{ steps.meta.outputs.metadata }};
+            const envFileBase64 = '${{ steps.envfile.outputs.content }}';
+
+            await github.rest.repos.createDispatchEvent({
+              owner: '${{ vars.ORCHESTRATOR_OWNER }}',
+              repo:  '${{ vars.ORCHESTRATOR_REPO }}',
+              event_type: 'service-built',
+              client_payload: {
+                service,
+                image,
+                branch,
+                sha,
+                metadata,
+                // El .env viaja en base64 para preservar caracteres especiales
+                // El orquestador lo decodifica y lo escribe en el servidor con permisos 600
+                env_file_b64: envFileBase64,
+              },
+            });
+
+            console.log(`✅ Dispatched: ${service} → ${branch} (${sha})`);
+            console.log(`   Image: ${image}`);
+            console.log(`   .env: ${envFileBase64 ? 'incluido' : 'no incluido'}`);
+
+      - name: Summary
+        run: |
+          echo "### 📡 Dispatch completado"                              >> $GITHUB_STEP_SUMMARY
+          echo "| Campo    | Valor |"                                    >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|"                                                >> $GITHUB_STEP_SUMMARY
+          echo "| Servicio | \`${{ steps.meta.outputs.service }}\` |"   >> $GITHUB_STEP_SUMMARY
+          echo "| Imagen   | \`${{ needs.build.outputs.image }}\`   |"  >> $GITHUB_STEP_SUMMARY
+          echo "| SHA      | \`${{ needs.build.outputs.sha }}\`     |"  >> $GITHUB_STEP_SUMMARY
+          echo "| Rama     | \`${{ github.ref_name }}\`             |"  >> $GITHUB_STEP_SUMMARY
+          echo "| .env     | ${{ steps.envfile.outputs.content != '' && '✅ incluido' || '⚠️ no incluido' }} |" >> $GITHUB_STEP_SUMMARY

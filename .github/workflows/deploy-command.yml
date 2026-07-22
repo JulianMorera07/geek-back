@@ -1,0 +1,208 @@
+name: 🎯 Deploy command — /deploy
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  deploy:
+    name: 🚀 Dispatch feature deploy
+    if: |
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/deploy')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+
+      # ── Verificar permisos del usuario que comentó ─────────────────────────
+      - name: Check permission
+        id: perm
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner:    context.repo.owner,
+              repo:     context.repo.repo,
+              username: context.payload.comment.user.login,
+            });
+            return ['write', 'admin'].includes(data.permission) ? 'true' : 'false';
+
+      - name: No permission
+        if: steps.perm.outputs.result != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `⛔ @${context.payload.comment.user.login} no tiene permisos para hacer deploy.`,
+            });
+
+      # ── Reacción inmediata para confirmar que se recibió el comando ─────────
+      - name: React 🚀
+        if: steps.perm.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner:      context.repo.owner,
+              repo:       context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content:    'rocket',
+            });
+
+      # ── Obtener datos del PR: rama, SHA, número ────────────────────────────
+      - name: Gather PR info
+        if: steps.perm.outputs.result == 'true'
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner:       context.repo.owner,
+              repo:        context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+
+            const branch = pr.head.ref;
+            const sha    = pr.head.sha.slice(0, 7);
+
+            // Slug: feat/nuevo-login → feat-nuevo-login
+            const slug = branch
+              .toLowerCase()
+              .replace(/[^a-z0-9]/g, '-')
+              .replace(/-+/g, '-')
+              .slice(0, 40);
+
+            // La imagen fue pusheada por el ci.yml con tag pr-N-SHA
+            const image = `ghcr.io/${{ github.repository }}:pr-${pr.number}-${sha}`;
+
+            core.setOutput('branch',    branch);
+            core.setOutput('slug',      slug);
+            core.setOutput('sha',       sha);
+            core.setOutput('image',     image);
+            core.setOutput('pr_number', String(pr.number));
+
+      # ── Checkout para leer el service.yml del repo ─────────────────────────
+      - name: Checkout
+        if: steps.perm.outputs.result == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.branch }}   # rama del PR, no main
+
+      - name: Install yq
+        if: steps.perm.outputs.result == 'true'
+        run: |
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      # ── Leer service.yml e inyectar config específica de la feature ─────────
+      # Se sobreescriben solo los campos que cambian por feature:
+      #   - name   → mi-api-feat-nuevo-login   (único, no colisiona con develop)
+      #   - image  → ghcr.io/org/repo:pr-42-a1b2c3d
+      #   - domain → feat-nuevo-login.tudominio.com
+      #   - expose → true (siempre, Traefik debe servirla)
+      # El resto (redes, healthcheck, dependencias, celery...) se hereda del
+      # service.yml del proyecto sin modificaciones.
+      - name: Read service.yml and inject feature config
+        if: steps.perm.outputs.result == 'true'
+        id: meta
+        run: |
+          if [ ! -f "service.yml" ]; then
+            echo "::error::No existe service.yml en la raíz del repo"
+            exit 1
+          fi
+
+          SLUG="${{ steps.pr.outputs.slug }}"
+          IMAGE="${{ steps.pr.outputs.image }}"
+          DOMAIN="${SLUG}.${{ vars.BASE_DOMAIN }}"
+          SERVICE_NAME="${{ vars.SERVICE_NAME }}-${SLUG}"
+
+          echo "Slug:    $SLUG"
+          echo "Image:   $IMAGE"
+          echo "Domain:  $DOMAIN"
+          echo "Service: $SERVICE_NAME"
+
+          # Sobreescribir solo los campos que son feature-específicos
+          yq -i ".service.name   = \"${SERVICE_NAME}\"" service.yml
+          yq -i ".service.image  = \"${IMAGE}\""        service.yml
+          yq -i ".service.domain = \"${DOMAIN}\""       service.yml
+          yq -i ".service.expose = true"                service.yml
+
+          # Convertir a JSON para el dispatch
+          METADATA=$(yq -o=json '.' service.yml)
+
+          echo "metadata<<EOF" >> $GITHUB_OUTPUT
+          echo "$METADATA"     >> $GITHUB_OUTPUT
+          echo "EOF"           >> $GITHUB_OUTPUT
+
+          echo "service=$SERVICE_NAME" >> $GITHUB_OUTPUT
+          echo "domain=$DOMAIN"        >> $GITHUB_OUTPUT
+
+      # ── Dispatch al orquestador ────────────────────────────────────────────
+      - name: Dispatch to orchestrator
+        if: steps.perm.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ORCHESTRATOR_PAT }}
+          script: |
+            const service  = '${{ steps.meta.outputs.service }}';
+            const image    = '${{ steps.pr.outputs.image }}';
+            const slug     = '${{ steps.pr.outputs.slug }}';
+            const sha      = '${{ steps.pr.outputs.sha }}';
+            const metadata = ${{ steps.meta.outputs.metadata }};
+
+            await github.rest.repos.createDispatchEvent({
+              owner: '${{ vars.ORCHESTRATOR_OWNER }}',
+              repo:  '${{ vars.ORCHESTRATOR_REPO }}',
+              event_type: 'service-built',
+              client_payload: {
+                service,
+                image,
+                branch:      `feat/${slug}`,
+                sha,
+                pr_number:   '${{ steps.pr.outputs.pr_number }}',
+                source_repo: '${{ github.repository }}',
+                metadata,
+              },
+            });
+
+            console.log(`✅ Dispatched feature deploy`);
+            console.log(`   Service : ${service}`);
+            console.log(`   Image   : ${image}`);
+            console.log(`   Domain  : ${{ steps.meta.outputs.domain }}`);
+            console.log(`   SHA     : ${sha}`);
+
+      # ── Comentar en el PR confirmando el deploy ────────────────────────────
+      - name: Comment — deploy triggered
+        if: steps.perm.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha    = '${{ steps.pr.outputs.sha }}';
+            const domain = '${{ steps.meta.outputs.domain }}';
+            const image  = '${{ steps.pr.outputs.image }}';
+
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: [
+                `🚀 **Deploy en proceso** · \`${sha}\``,
+                ``,
+                `| Campo   | Valor |`,
+                `|---|---|`,
+                `| Imagen  | \`${image}\` |`,
+                `| Preview | \`https://${domain}\` |`,
+                ``,
+                `El orquestador está levantando el contenedor.`,
+                `El link estará disponible en unos segundos.`,
+              ].join('\n'),
+            });

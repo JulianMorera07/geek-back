@@ -1,0 +1,35 @@
+# service.example.yml
+# Este es el esquema completo de metadata que el orquestador entiende.
+# Copia y adapta según tu proyecto. Este bloque va en el paso "Dispatch"
+# del workflow ci.yml, dentro del objeto `metadata`.
+
+service:
+  # ── Identidad ───────────────────────────────────────────────────────────────
+  name: mi-api
+  image: ghcr.io/org/mi-repo:develop
+  type: backend
+
+  # ── Variables de entorno ────────────────────────────────────────────────────
+  # El CI genera el .env desde .env.example + GitHub Secrets y lo manda
+  # al orquestador. El orquestador lo escribe en esta ruta del servidor
+  # con permisos 600 antes de levantar el contenedor.
+  # NO pongas esta ruta manualmente — el orquestador la inyecta automáticamente.
+  # env_file: /opt/github-runner/runtime/secrets/mi-api.env  ← auto-inyectado
+
+  # ── Exposición HTTP ─────────────────────────────────────────────────────────
+  expose: false
+  container:
+    port: 8000
+    listen: 8000
+
+  # ── Redes ───────────────────────────────────────────────────────────────────
+  networks:
+    - name: geek
+      create: true
+    - name: infra
+      create: false
+
+  # ── Healthcheck ─────────────────────────────────────────────────────────────
+  healthcheck:
+    validate: true
+    path: /health

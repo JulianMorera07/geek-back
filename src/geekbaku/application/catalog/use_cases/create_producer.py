@@ -1,0 +1,36 @@
+"""Caso de uso: crear un Producer."""
+
+from __future__ import annotations
+
+from geekbaku.application.catalog.dto import CreateProducerCommand, ProducerDTO
+from geekbaku.application.catalog.mappers import parse_slug, producer_to_dto
+from geekbaku.application.catalog.ports import CatalogUnitOfWork
+from geekbaku.domain.catalog.entities import Producer
+from geekbaku.domain.catalog.exceptions import DuplicateSlugError
+from geekbaku.domain.catalog.value_objects import Country, ProducerId
+
+
+class CreateProducer:
+    def __init__(self, uow: CatalogUnitOfWork) -> None:
+        self._uow = uow
+
+    async def execute(self, command: CreateProducerCommand) -> ProducerDTO:
+        slug = parse_slug(command.slug)
+
+        async with self._uow:
+            if await self._uow.producers.exists_by_slug(slug):
+                raise DuplicateSlugError(f"Ya existe un productor con el slug '{slug}'.")
+
+            country = (
+                Country(code=command.country_code, name=command.country_name)
+                if command.country_code and command.country_name
+                else None
+            )
+
+            producer = Producer(
+                id=ProducerId.new(), name=command.name, slug=slug, country=country
+            )
+            await self._uow.producers.add(producer)
+            await self._uow.commit()
+
+        return producer_to_dto(producer)
