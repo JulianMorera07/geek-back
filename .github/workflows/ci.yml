@@ -220,7 +220,9 @@ jobs:
         # de la variable en tu .env.example.
         # Los valores vienen de tus GitHub Secrets o Variables del repo.
         env:
-          BACKEND_INTERNAL_URL: ${{ secrets.BACKEND_INTERNAL_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
 
       # ── Leer service.yml e inyectar la imagen del build actual ─────────────
       - name: Read service.yml and inject image
