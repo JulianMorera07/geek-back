@@ -15,7 +15,6 @@ service:
   # con permisos 600 antes de levantar el contenedor.
   # NO pongas esta ruta manualmente — el orquestador la inyecta automáticamente.
   # env_file: /opt/github-runner/runtime/secrets/mi-api.env  ← auto-inyectado
-
   # ── Exposición HTTP ─────────────────────────────────────────────────────────
   expose: false
   container:
