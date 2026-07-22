@@ -41,6 +41,9 @@ jobs:
         run: |
           SHA=$(echo "${{ github.sha }}" | cut -c1-7)
 
+          # GHCR requiere que el nombre del repo sea lowercase
+          IMAGE_NAME=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             TAG="pr-${{ github.event.number }}-${SHA}"
           elif [ "${{ github.ref_name }}" = "main" ]; then
@@ -49,7 +52,7 @@ jobs:
             TAG="${{ github.ref_name }}-${SHA}"
           fi
 
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          IMAGE="${{ env.REGISTRY }}/${IMAGE_NAME}:${TAG}"
 
           echo "tag=$TAG"     >> $GITHUB_OUTPUT
           echo "sha=$SHA"     >> $GITHUB_OUTPUT
@@ -217,11 +220,7 @@ jobs:
         # de la variable en tu .env.example.
         # Los valores vienen de tus GitHub Secrets o Variables del repo.
         env:
-          # ── Base de datos ──────────────────────────────────────────────────
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          REDIS_URL: ${{ secrets.REDIS_URL }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-      
+          BACKEND_INTERNAL_URL: ${{ secrets.BACKEND_INTERNAL_URL }}
 
       # ── Leer service.yml e inyectar la imagen del build actual ─────────────
       - name: Read service.yml and inject image
