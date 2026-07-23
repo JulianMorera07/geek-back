@@ -23,7 +23,7 @@ service:
   # ── Redes ───────────────────────────────────────────────────────────────────
   networks:
     - name: geek
-      create: true
+      create: false
     - name: infra
       create: false
 
