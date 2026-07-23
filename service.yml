@@ -28,6 +28,6 @@ service:
       create: false
 
   # ── Healthcheck ─────────────────────────────────────────────────────────────
-  healthcheck:
-    validate: true
-    path: /health
+  # healthcheck:
+  #   validate: true
+  #   path: /health
