@@ -220,10 +220,11 @@ jobs:
         # de la variable en tu .env.example.
         # Los valores vienen de tus GitHub Secrets o Variables del repo.
         env:
+          # ── Base de datos ──────────────────────────────────────────────────
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-
+          
       # ── Leer service.yml e inyectar la imagen del build actual ─────────────
       - name: Read service.yml and inject image
         id: meta
@@ -234,7 +235,13 @@ jobs:
           fi
 
           IMAGE="${{ needs.build.outputs.image }}"
-          yq -i ".service.image = \"${IMAGE}\"" service.yml
+
+          # El nombre del contenedor es el nombre del repositorio en minúsculas
+          # github.repository devuelve "owner/repo", tomamos solo el nombre del repo
+          REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+
+          yq -i ".service.image = \"${IMAGE}\""       service.yml
+          yq -i ".service.name  = \"${REPO_NAME}\""   service.yml
 
           METADATA=$(yq -o=json '.' service.yml)
 
@@ -242,7 +249,7 @@ jobs:
           echo "$METADATA"     >> $GITHUB_OUTPUT
           echo "EOF"           >> $GITHUB_OUTPUT
 
-          echo "service=$(yq -r '.service.name' service.yml)" >> $GITHUB_OUTPUT
+          echo "service=${REPO_NAME}" >> $GITHUB_OUTPUT
 
       # ── Dispatch al orquestador con metadata + .env ─────────────────────────
       - name: Dispatch to orchestrator
