@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from geekbaku.application.catalog.dto import ListCatalogQuery
 from geekbaku.application.catalog.use_cases.get_anime_by_id import GetAnimeById
@@ -41,8 +41,8 @@ async def list_anime(
     producer_id: str | None = None,
     tag_id: str | None = None,
     q: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     use_case: ListCatalog = Depends(deps.get_list_catalog_use_case),
 ) -> PageSchema[AnimeSummarySchema]:
     result = await use_case.execute(

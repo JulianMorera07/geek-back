@@ -6,13 +6,10 @@ instancia durante la vida del proceso — apropiado para stores in-memory
 como `InMemoryPlaybackSessionRepository`/`InMemoryProviderCache`, que deben
 compartir estado entre requests.
 
-`get_catalog_unit_of_work` no tiene todavía una implementación real: el
-adapter SQLAlchemy de `CatalogUnitOfWork` sigue sin construirse (pendiente
-desde el Sprint 2, ver `docs/architecture.md`). Los routers que lo
-necesitan (Playback API) quedan completamente implementados y probados
-(`tests/integration/playback/`, vía `app.dependency_overrides`), pero para
-correr contra datos reales hace falta reemplazar este provider cuando
-exista el adapter — no antes.
+`get_catalog_unit_of_work` usa el adapter SQLAlchemy (`SQLAlchemyCatalogUnitOfWork`),
+una instancia por request atada a una `AsyncSession` (FastAPI cachea el
+resultado de `Depends()` durante la vida del request, así que todos los
+casos de uso de un mismo request comparten la misma sesión/transacción).
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ from functools import lru_cache
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from geekbaku.application.aggregation.engine import AggregationEngine
 from geekbaku.application.aggregation.use_cases.get_aggregated_latest import GetAggregatedLatest
@@ -83,9 +81,10 @@ from geekbaku.domain.providers.value_objects import (
     RateLimitConfig,
     RetryConfig,
 )
-from geekbaku.infrastructure.catalog.repositories.in_memory_catalog_repository import (
-    InMemoryCatalogUnitOfWork,
+from geekbaku.infrastructure.catalog.repositories.sqlalchemy_catalog_repository import (
+    SQLAlchemyCatalogUnitOfWork,
 )
+from geekbaku.infrastructure.db.base import get_session
 from geekbaku.infrastructure.identity.brute_force_guard import InMemoryBruteForceGuard
 from geekbaku.infrastructure.identity.jwt_token_service import JwtTokenService
 from geekbaku.infrastructure.identity.password_hasher import Argon2PasswordHasher
@@ -101,14 +100,10 @@ from geekbaku.infrastructure.providers.tioanime.client import (
 )
 
 
-@lru_cache
-def get_catalog_unit_of_work() -> CatalogUnitOfWork:
-    """Singleton in-memory para todo el proceso — real, no un doble (ver
-    `InMemoryCatalogUnitOfWork`). Sin persistencia entre restarts: cuando
-    exista el adapter SQLAlchemy (pendiente desde el Sprint 2), reemplaza
-    este provider sin tocar ningún caso de uso.
-    """
-    return InMemoryCatalogUnitOfWork()
+def get_catalog_unit_of_work(
+    session: AsyncSession = Depends(get_session),
+) -> CatalogUnitOfWork:
+    return SQLAlchemyCatalogUnitOfWork(session)
 
 
 @lru_cache

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
@@ -7,6 +9,8 @@ from geekbaku.domain.identity.exceptions import (
     TooManyAttemptsError,
 )
 from geekbaku.domain.shared.errors import ConflictError, DomainError, NotFoundError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
@@ -63,7 +67,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _error_response(status.HTTP_400_BAD_REQUEST, "domain_error", str(exc))
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(_request: Request, _exc: Exception) -> JSONResponse:
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception(
+            "Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc
+        )
         return _error_response(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "internal_server_error",

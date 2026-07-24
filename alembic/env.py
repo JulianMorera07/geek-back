@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from geekbaku.config.settings import get_settings
 from geekbaku.infrastructure.db.base import Base
 
-# Importar aquí los módulos de modelos ORM para que se registren en
-# Base.metadata antes de que Alembic compare el esquema (Sprint 2+):
-# from geekbaku.infrastructure.db.models import catalog, user, favorites, history  # noqa: E501
+# Importar los modelos ORM para que se registren en Base.metadata antes de
+# que Alembic compare el esquema.
+from geekbaku.infrastructure.db import models  # noqa: F401
 
 config = context.config
 

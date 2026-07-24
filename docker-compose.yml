@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: geekbaku
+      POSTGRES_PASSWORD: geekbaku
+      POSTGRES_DB: geekbaku
+    ports:
+      - "5432:5432"
+    volumes:
+      - geekbaku_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geekbaku -d geekbaku"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://geekbaku:geekbaku@postgres:5432/geekbaku
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: local
+      DEBUG: "true"
+      LOG_LEVEL: DEBUG
+      JWT_SECRET_KEY: local-dev-only-secret-not-for-production-0123456789
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://geekbaku:geekbaku@postgres:5432/geekbaku
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: local
+      DEBUG: "true"
+      LOG_LEVEL: DEBUG
+      LOG_JSON: "false"
+      CORS_ALLOW_ORIGINS: '["*"]'
+      JWT_SECRET_KEY: local-dev-only-secret-not-for-production-0123456789
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  geekbaku_pg_data:

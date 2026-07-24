@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from geekbaku.domain.shared.errors import ValidationError
+
 _MAX_PAGE_SIZE = 100
 
 
@@ -16,9 +18,9 @@ class Pagination:
 
     def __post_init__(self) -> None:
         if self.page < 1:
-            raise ValueError("page debe ser >= 1.")
+            raise ValidationError("page debe ser >= 1.")
         if not (1 <= self.page_size <= _MAX_PAGE_SIZE):
-            raise ValueError(f"page_size debe estar entre 1 y {_MAX_PAGE_SIZE}.")
+            raise ValidationError(f"page_size debe estar entre 1 y {_MAX_PAGE_SIZE}.")
 
     @property
     def offset(self) -> int:

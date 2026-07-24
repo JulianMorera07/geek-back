@@ -36,8 +36,8 @@ def _parse_provider_ids(provider_ids: str | None) -> tuple[str, ...] | None:
 )
 async def search_anime(
     q: str = Query(..., min_length=1, examples=["shingeki no kyojin"]),
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     provider_ids: str | None = Query(
         default=None, description="Lista separada por comas, ej. 'jikan,otro-provider'."
     ),
@@ -52,8 +52,8 @@ async def search_anime(
     summary="Últimos Anime agregados entre providers",
 )
 async def get_latest(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     provider_ids: str | None = Query(default=None),
     use_case: GetAggregatedLatest = Depends(deps.get_aggregated_latest_use_case),
 ) -> list[AggregatedSearchResultSchema]:
@@ -66,8 +66,8 @@ async def get_latest(
     summary="Anime más populares entre providers",
 )
 async def get_popular(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     provider_ids: str | None = Query(default=None),
     use_case: GetAggregatedPopular = Depends(deps.get_aggregated_popular_use_case),
 ) -> list[AggregatedSearchResultSchema]:
