@@ -2,7 +2,6 @@
 # Este es el esquema completo de metadata que el orquestador entiende.
 # Copia y adapta según tu proyecto. Este bloque va en el paso "Dispatch"
 # del workflow ci.yml, dentro del objeto `metadata`.
-
 service:
   # ── Identidad ───────────────────────────────────────────────────────────────
   name: mi-api
